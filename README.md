@@ -44,26 +44,29 @@ A real-time monitoring tool for PTP Hardware Clocks (PHC) on Linux systems. Simi
 
 ## Installation
 
-### Quick Install
+### Install from TestPyPI (Current)
 
-1. Download the script:
-   ```bash
-   wget https://raw.githubusercontent.com/yourusername/phctop/main/phctop
-   # or
-   curl -O https://raw.githubusercontent.com/yourusername/phctop/main/phctop
-   ```
+The package is currently available on TestPyPI for testing:
 
-2. Make it executable:
-   ```bash
-   chmod +x phctop
-   ```
+```bash
+pip install --index-url https://test.pypi.org/simple/ phctop
+```
 
-3. Move to system PATH (optional):
-   ```bash
-   sudo mv phctop /usr/local/bin/
-   ```
+After installation, you can run it directly:
+```bash
+phctop --version
+phctop
+```
 
-### Manual Installation
+### Install from PyPI (Coming Soon)
+
+Once published to the main PyPI repository:
+
+```bash
+pip install phctop
+```
+
+### Install from Source
 
 1. Clone the repository:
    ```bash
@@ -71,41 +74,30 @@ A real-time monitoring tool for PTP Hardware Clocks (PHC) on Linux systems. Simi
    cd phctop
    ```
 
-2. Make executable and install:
+2. Install using pip:
    ```bash
-   chmod +x phctop
-   sudo cp phctop /usr/local/bin/
+   pip install .
+   
+   # For development installation (editable mode)
+   pip install -e .
+   
+   # With development dependencies
+   pip install -e ".[dev]"
    ```
 
-### Python Package Installation
+### Manual Installation (Without pip)
 
-Install using pip (recommended for Python environments):
+If you prefer to install the script directly:
 
-```bash
-# Install from PyPI (once published)
-pip install phctop
-
-# Or install from source
-git clone https://github.com/yourusername/phctop.git
-cd phctop
-pip install .
-
-# For development installation (editable mode)
-pip install -e .
-
-# With development dependencies
-pip install -e ".[dev]"
-```
-
-### Building and Publishing
-
-```bash
-# Build distribution packages
-python -m build
-
-# Upload to PyPI (requires account and API token)
-python -m twine upload dist/*
-```
+1. Download `phctop.py` from the repository
+2. Make it executable:
+   ```bash
+   chmod +x phctop.py
+   ```
+3. Move to system PATH (optional):
+   ```bash
+   sudo cp phctop.py /usr/local/bin/phctop
+   ```
 
 ## Usage
 
