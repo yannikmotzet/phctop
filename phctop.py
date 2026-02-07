@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""
+phctop - Monitor PTP Hardware Clock times with detailed PTP information
+"""
+
+import subprocess
+import sys
+import time
+import re
+from datetime import datetime
+from pathlib import Path
+
+
+def get_system_time():
+    """Get current system time and raw timestamp"""
+    now = datetime.now()
+    return now, time.time()
+
+
+def get_phc_time_raw(phc_device):
+    """Get raw time from a specific PHC device using phc_ctl"""
+    try:
+        result = subprocess.run(
+            ['phc_ctl', phc_device, 'get'],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            if ':' in output:
+                timestamp_str = output.split(':')[-1].strip()
+                return timestamp_str  # Return as string to preserve precision
+        return None
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError, FileNotFoundError):
+        return None
+
+
+def get_phc_for_interface(interface):
+    """Find which PHC device corresponds to a network interface"""
+    try:
+        net_path = Path(f'/sys/class/net/{interface}')
+        if not net_path.exists():
+            return None
+        
+        ptp_path = net_path / 'ptp'
+        if ptp_path.exists():
+            for ptp_dir in ptp_path.iterdir():
+                if ptp_dir.name.startswith('ptp'):
+                    return f"/dev/{ptp_dir.name}"
+        return None
+    except:
+        return None
+
+
+def get_interface_for_phc(phc_num):
+    """Find which network interface corresponds to a PHC"""
+    try:
+        net_path = Path('/sys/class/net')
+        if not net_path.exists():
+            return None
+        
+        for iface in net_path.iterdir():
+            if not iface.is_dir():
+                continue
+            
+            ptp_path = iface / 'ptp'
+            if ptp_path.exists():
+                for ptp_dir in ptp_path.iterdir():
+                    if ptp_dir.name == f'ptp{phc_num}':
+                        return iface.name
+        return None
+    except:
+        return None
+
+
+def check_hw_timestamp_support(interface):
+    """Check if interface supports hardware timestamping using ethtool"""
+    try:
+        result = subprocess.run(
+            ['ethtool', '-T', interface],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        
+        if result.returncode == 0:
+            output = result.stdout
+            # Check if hardware timestamping is supported
+            if 'SOF_TIMESTAMPING_TX_HARDWARE' in output or 'hardware-transmit' in output.lower():
+                return True
+        return False
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def get_all_network_interfaces():
+    """Get all network interfaces"""
+    interfaces = []
+    try:
+        net_path = Path('/sys/class/net')
+        if not net_path.exists():
+            return interfaces
+        
+        for iface in sorted(net_path.iterdir()):
+            if iface.is_dir():
+                iface_name = iface.name
+                # Skip loopback and virtual interfaces if desired
+                if iface_name != 'lo':
+                    interfaces.append(iface_name)
+        return interfaces
+    except:
+        return interfaces
+
+
+def run_pmc_command(command, interface=None):
+    """Run a pmc command and return the output"""
+    try:
+        cmd = ['pmc', '-u', '-b', '0']
+        if interface:
+            cmd.extend(['-i', interface])
+        cmd.append(command)
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        
+        if result.returncode == 0:
+            return result.stdout
+        return None
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def parse_pmc_output(output, key):
+    """Parse PMC output for a specific key"""
+    if not output:
+        return None
+    
+    pattern = rf'{key}\s+(.+?)(?:\n|$)'
+    match = re.search(pattern, output)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def get_ptp_info(interface):
+    """Get detailed PTP information for an interface"""
+    info = {
+        'protocol': 'N/A',
+        'port_state': 'N/A',
+        'delay_mechanism': 'N/A',
+        'mean_path_delay': 'N/A',
+        'offset_from_master': 'N/A',
+        'gm_identity': 'N/A',
+        'time_source': 'N/A',
+        'timescale': 'N/A',
+        'steps_removed': 'N/A',
+        'utc_offset': None,
+    }
+    
+    if not interface:
+        return info
+    
+    # Get CURRENT_DATA_SET
+    current_data = run_pmc_command('GET CURRENT_DATA_SET', interface)
+    if current_data:
+        offset = parse_pmc_output(current_data, 'offsetFromMaster')
+        if offset:
+            info['offset_from_master'] = offset
+        
+        mpd = parse_pmc_output(current_data, 'meanPathDelay')
+        if mpd:
+            info['mean_path_delay'] = mpd
+        
+        steps = parse_pmc_output(current_data, 'stepsRemoved')
+        if steps:
+            info['steps_removed'] = steps
+    
+    # Get PORT_DATA_SET
+    port_data = run_pmc_command('GET PORT_DATA_SET', interface)
+    if port_data:
+        port_state = parse_pmc_output(port_data, 'portState')
+        if port_state:
+            info['port_state'] = port_state
+        
+        delay_mech = parse_pmc_output(port_data, 'delayMechanism')
+        if delay_mech:
+            # Map delay mechanism codes
+            delay_map = {
+                '1': 'E2E',
+                '2': 'P2P',
+                'E2E': 'E2E',
+                'P2P': 'P2P',
+            }
+            info['delay_mechanism'] = delay_map.get(delay_mech, delay_mech)
+    
+    # Get PARENT_DATA_SET for grandmaster info
+    parent_data = run_pmc_command('GET PARENT_DATA_SET', interface)
+    if parent_data:
+        gm_id = parse_pmc_output(parent_data, 'grandmasterIdentity')
+        if gm_id:
+            info['gm_identity'] = gm_id
+    
+    # Get TIME_PROPERTIES_DATA_SET
+    time_props = run_pmc_command('GET TIME_PROPERTIES_DATA_SET', interface)
+    if time_props:
+        time_source = parse_pmc_output(time_props, 'timeSource')
+        if time_source:
+            # Map time source codes to readable names
+            source_map = {
+                '0x10': 'ATOMIC_CLOCK',
+                '0x20': 'GPS',
+                '0x30': 'TERRESTRIAL_RADIO',
+                '0x39': 'PTP',
+                '0x40': 'NTP',
+                '0x50': 'HAND_SET',
+                '0x60': 'OTHER',
+                '0x90': 'INT_OSC',
+                '16': 'ATOMIC_CLOCK',
+                '32': 'GPS',
+                '48': 'TERRESTRIAL_RADIO',
+                '57': 'PTP',
+                '64': 'NTP',
+                '80': 'HAND_SET',
+                '96': 'OTHER',
+                '144': 'INT_OSC',
+            }
+            info['time_source'] = source_map.get(time_source, time_source)
+        
+        # Check for PTP timescale (0 = ARB, 1 = PTP which follows TAI)
+        ptp_timescale = parse_pmc_output(time_props, 'ptpTimescale')
+        current_utc_offset = parse_pmc_output(time_props, 'currentUtcOffset')
+        
+        if current_utc_offset:
+            try:
+                info['utc_offset'] = int(current_utc_offset)
+            except:
+                pass
+        
+        if ptp_timescale == '1':
+            info['timescale'] = f'TAI (UTC offset: {current_utc_offset}s)' if current_utc_offset else 'TAI'
+        elif ptp_timescale == '0':
+            info['timescale'] = 'ARB'
+        else:
+            info['timescale'] = 'Unknown'
+    
+    # Determine protocol based on configuration or port state
+    # Check if ptp4l is running with gPTP profile
+    try:
+        result = subprocess.run(
+            ['ps', 'aux'],
+            capture_output=True,
+            text=True,
+            timeout=1
+        )
+        if f'-i {interface}' in result.stdout or interface in result.stdout:
+            if '-P' in result.stdout or 'automotive' in result.stdout:
+                info['protocol'] = 'gPTP (802.1AS)'
+            else:
+                info['protocol'] = f'PTPv2 ({info["delay_mechanism"]})'
+    except:
+        info['protocol'] = f'PTPv2 ({info["delay_mechanism"]})'
+    
+    return info
+
+
+def find_all_phcs():
+    """Find all available PHC devices"""
+    phc_devices = []
+    ptp_path = Path('/dev')
+    
+    for device in sorted(ptp_path.glob('ptp*')):
+        phc_devices.append(str(device))
+    
+    return phc_devices
+
+
+def format_ns_to_readable(ns_str):
+    """Convert nanoseconds string to readable format"""
+    try:
+        ns = int(ns_str)
+        if abs(ns) < 1000:
+            return f"{ns} ns"
+        elif abs(ns) < 1000000:
+            return f"{ns/1000:.2f} µs"
+        else:
+            return f"{ns/1000000:.3f} ms"
+    except:
+        return ns_str
+
+
+def timestamp_to_human(timestamp_str):
+    """Convert timestamp string to human-readable format"""
+    try:
+        timestamp = float(timestamp_str)
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    except:
+        return "Invalid"
+
+
+def calculate_offset_ms(ts1_str, ts2_str):
+    """Calculate offset in milliseconds between two timestamps"""
+    try:
+        ts1 = float(ts1_str)
+        ts2 = float(ts2_str)
+        return (ts1 - ts2) * 1000
+    except:
+        return None
+
+
+def display_times(interval=1, show_all_interfaces=False):
+    """Display all PHC times and system time with detailed PTP info"""
+    
+    # Check if required tools are available
+    try:
+        subprocess.run(['phc_ctl'], capture_output=True)
+    except FileNotFoundError:
+        print("Error: phc_ctl not found. Please install linuxptp package.", file=sys.stderr)
+        sys.exit(1)
+    
+    try:
+        subprocess.run(['pmc'], capture_output=True)
+    except FileNotFoundError:
+        print("Warning: pmc not found. Detailed PTP info will not be available.", file=sys.stderr)
+        print("Install linuxptp package for full functionality.", file=sys.stderr)
+        time.sleep(2)
+    
+    iteration = 0
+    first_run = True
+    
+    try:
+        while True:
+            # Move cursor to top-left on subsequent runs
+            if not first_run:
+                sys.stdout.write('\033[H')
+            else:
+                first_run = False
+            
+            output_lines = []
+            output_lines.append("=" * 140)
+            output_lines.append(f"phctop - PTP Hardware Clock Monitor - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            output_lines.append("=" * 140)
+            
+            # Get system time as reference
+            system_dt, system_ts_raw = get_system_time()
+            system_ts_str = f"{system_ts_raw:.9f}"
+            system_human = system_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            
+            output_lines.append(f"\n{'SYSTEM CLOCK':<20}")
+            output_lines.append(f"  Time: {system_human} | Raw: {system_ts_str}")
+            output_lines.append(f"  Timescale: UTC/Linux | Offset: 0.000 ms (reference)")
+            
+            # Find all PHCs and interfaces
+            phc_devices = find_all_phcs()
+            all_interfaces = get_all_network_interfaces()
+            
+            # Track which interfaces we've already shown
+            shown_interfaces = set()
+            
+            if not phc_devices and not show_all_interfaces:
+                output_lines.append("\nNo PHC devices found in /dev/ptp*")
+            else:
+                # First show all PHC devices with their interfaces
+                for phc_device in phc_devices:
+                    phc_name = Path(phc_device).name
+                    phc_num = phc_name.replace('ptp', '')
+                    interface = get_interface_for_phc(phc_num)
+                    
+                    if interface:
+                        shown_interfaces.add(interface)
+                    
+                    output_lines.append(f"\n{'─' * 140}")
+                    output_lines.append(f"{phc_name.upper():<20} Interface: {interface if interface else 'N/A':<15} Device: {phc_device}")
+                    
+                    phc_timestamp_str = get_phc_time_raw(phc_device)
+                    
+                    # Get PTP information if interface is available
+                    ptp_info = None
+                    if interface:
+                        ptp_info = get_ptp_info(interface)
+                    
+                    if phc_timestamp_str:
+                        human_time = timestamp_to_human(phc_timestamp_str)
+                        offset_ms = calculate_offset_ms(phc_timestamp_str, system_ts_str)
+                        
+                        output_lines.append(f"  Time: {human_time} | Raw: {phc_timestamp_str}")
+                        
+                        if offset_ms is not None:
+                            output_lines.append(f"  Offset from system clock: {offset_ms:+.3f} ms")
+                    else:
+                        output_lines.append(f"  Time: unavailable")
+                    
+                    # Display PTP information if interface is available
+                    if interface and ptp_info:
+                        output_lines.append(f"  Protocol: {ptp_info['protocol']:<25} Port State: {ptp_info['port_state']:<15} Delay Mech: {ptp_info['delay_mechanism']}")
+                        output_lines.append(f"  Timescale: {ptp_info['timescale']:<25} Time Source: {ptp_info['time_source']}")
+                        
+                        offset_str = format_ns_to_readable(ptp_info['offset_from_master'])
+                        delay_str = format_ns_to_readable(ptp_info['mean_path_delay'])
+                        
+                        output_lines.append(f"  Offset from Master: {offset_str:<25} Mean Path Delay: {delay_str}")
+                        output_lines.append(f"  Steps Removed: {ptp_info['steps_removed']:<25} GM Identity: {ptp_info['gm_identity']}")
+                    elif not interface:
+                        output_lines.append(f"  PTP Info: Not available (no interface mapping)")
+                
+                # Now show interfaces without hardware timestamping support if requested
+                if show_all_interfaces:
+                    non_hw_interfaces = [iface for iface in all_interfaces if iface not in shown_interfaces]
+                    
+                    if non_hw_interfaces:
+                        output_lines.append(f"\n{'═' * 140}")
+                        output_lines.append(f"INTERFACES WITHOUT HARDWARE TIMESTAMPING SUPPORT")
+                        output_lines.append(f"{'═' * 140}")
+                        
+                        for interface in non_hw_interfaces:
+                            output_lines.append(f"\n{'─' * 140}")
+                            output_lines.append(f"{'INTERFACE':<20} {interface:<15} PHC: None")
+                            output_lines.append(f"  Hardware Timestamping: NOT SUPPORTED")
+                            output_lines.append(f"  Uses system clock for timestamping (software timestamps only)")
+                            
+                            # Still try to get PTP info in case it's running with software timestamps
+                            ptp_info = get_ptp_info(interface)
+                            if ptp_info and ptp_info['port_state'] != 'N/A':
+                                output_lines.append(f"  Protocol: {ptp_info['protocol']:<25} Port State: {ptp_info['port_state']:<15} Delay Mech: {ptp_info['delay_mechanism']}")
+                                output_lines.append(f"  Note: Running PTP with software timestamps (reduced accuracy)")
+            
+            output_lines.append(f"\n{'=' * 140}")
+            output_lines.append(f"Update interval: {interval}s | Press Ctrl+C to exit | Updates: {iteration + 1}")
+            if show_all_interfaces:
+                output_lines.append(f"Showing all interfaces (use without -a to show only HW timestamping interfaces)")
+            
+            # Clear from cursor to end of screen, then print all lines
+            sys.stdout.write('\033[J')
+            for line in output_lines:
+                print(line)
+            
+            sys.stdout.flush()
+            
+            iteration += 1
+            time.sleep(interval)
+            
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        sys.exit(0)
+
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='phctop - Monitor PTP Hardware Clocks in real-time',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s              Update display every second (default)
+  %(prog)s -i 0.5       Update every 500ms
+  %(prog)s -i 2         Update every 2 seconds
+  %(prog)s -a           Show all interfaces including those without HW timestamping
+
+Displays:
+  - PHC device name and path (/dev/ptpX)
+  - Network interface mapping
+  - Human-readable time and raw timestamp
+  - Offset from system clock
+  - PTP protocol (PTPv2 E2E/P2P or gPTP)
+  - Port state (MASTER, SLAVE, LISTENING, etc.)
+  - Delay mechanism (E2E or P2P)
+  - Offset from master and mean path delay
+  - Timescale (TAI/UTC/ARB) with UTC offset
+  - Time source (GPS, ATOMIC_CLOCK, NTP, etc.)
+  - Grandmaster identity
+  - Steps removed from grandmaster
+  - Interfaces without hardware timestamping support (with -a flag)
+
+Requirements:
+  - linuxptp package (for phc_ctl and pmc commands)
+  - Root/sudo privileges may be required for some operations
+        """
+    )
+    
+    parser.add_argument(
+        '-i', '--interval',
+        type=float,
+        default=1.0,
+        help='Update interval in seconds (default: 1.0)'
+    )
+    
+    parser.add_argument(
+        '-a', '--all-interfaces',
+        action='store_true',
+        help='Show all network interfaces, including those without hardware timestamping support'
+    )
+    
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='phctop 1.0.0'
+    )
+    
+    args = parser.parse_args()
+    
+    if args.interval <= 0:
+        print("Error: Interval must be greater than 0", file=sys.stderr)
+        sys.exit(1)
+    
+    display_times(interval=args.interval, show_all_interfaces=args.all_interfaces)
+
+
+if __name__ == '__main__':
+    main()
