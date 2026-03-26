@@ -323,6 +323,7 @@ def display_times(interval=1, show_all_interfaces=False):
 
     iteration = 0
     first_run = True
+    last_line_count = 0
 
     try:
         while True:
@@ -408,12 +409,13 @@ def display_times(interval=1, show_all_interfaces=False):
             for line in output_lines:
                 print(line)
             sys.stdout.flush()
+            last_line_count = len(output_lines)
 
             iteration += 1
             time.sleep(interval)
 
     except KeyboardInterrupt:
-        print()
+        sys.stdout.write(f'\033[{last_line_count + 1};1H\n')
         sys.exit(0)
 
 
