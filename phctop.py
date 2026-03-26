@@ -307,139 +307,114 @@ def calculate_offset_ms(ts1_str, ts2_str):
 
 def display_times(interval=1, show_all_interfaces=False):
     """Display all PHC times and system time with detailed PTP info"""
-    
+
     # Check if required tools are available
     try:
         subprocess.run(['phc_ctl'], capture_output=True)
     except FileNotFoundError:
         print("Error: phc_ctl not found. Please install linuxptp package.", file=sys.stderr)
         sys.exit(1)
-    
+
     try:
         subprocess.run(['pmc'], capture_output=True)
     except FileNotFoundError:
         print("Warning: pmc not found. Detailed PTP info will not be available.", file=sys.stderr)
-        print("Install linuxptp package for full functionality.", file=sys.stderr)
         time.sleep(2)
-    
+
     iteration = 0
     first_run = True
-    
+
     try:
         while True:
-            # Move cursor to top-left on subsequent runs
             if not first_run:
                 sys.stdout.write('\033[H')
             else:
+                sys.stdout.write('\033[2J\033[H')  # clear screen on first run
                 first_run = False
-            
+
+            cols = os.get_terminal_size().columns
+
             output_lines = []
-            output_lines.append("=" * 140)
-            output_lines.append(f"phctop - PTP Hardware Clock Monitor - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            output_lines.append("=" * 140)
-            
-            # Get system time as reference
+            output_lines.append('phctop - PTP Hardware Clock Monitor')
+            output_lines.append('─' * cols)
+
+            # Column widths
+            w_dev, w_iface, w_time, w_offset = 10, 12, 26, 16
+
+            header = f"  {'DEVICE':<{w_dev}} {'INTERFACE':<{w_iface}} {'TIME':<{w_time}} {'SYS OFFSET':<{w_offset}}"
+            output_lines.append(header)
+            output_lines.append('─' * cols)
+
+            # System time row
             system_dt, system_ts_raw = get_system_time()
             system_ts_str = f"{system_ts_raw:.9f}"
             system_human = system_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            
-            output_lines.append(f"\n{'SYSTEM CLOCK':<20}")
-            output_lines.append(f"  Time: {system_human} | Raw: {system_ts_str}")
-            output_lines.append(f"  Timescale: UTC/Linux | Offset: 0.000 ms (reference)")
-            
-            # Find all PHCs and interfaces
+            output_lines.append(f"  {'system':<{w_dev}} {'-':<{w_iface}} {system_human:<{w_time}} {'reference':<{w_offset}}")
+
+            # Find all PHCs
             phc_devices = find_all_phcs()
             all_interfaces = get_all_network_interfaces()
-            
-            # Track which interfaces we've already shown
             shown_interfaces = set()
-            
+
             if not phc_devices and not show_all_interfaces:
-                output_lines.append("\nNo PHC devices found in /dev/ptp*")
+                output_lines.append("\n  No PHC devices found in /dev/ptp*")
             else:
-                # First show all PHC devices with their interfaces
                 for phc_device in phc_devices:
                     phc_name = Path(phc_device).name
                     phc_num = phc_name.replace('ptp', '')
                     interface = get_interface_for_phc(phc_num)
-                    
+
                     if interface:
                         shown_interfaces.add(interface)
-                    
-                    output_lines.append(f"\n{'─' * 140}")
-                    output_lines.append(f"{phc_name.upper():<20} Interface: {interface if interface else 'N/A':<15} Device: {phc_device}")
-                    
+
                     phc_timestamp_str = get_phc_time_raw(phc_device)
-                    
-                    # Get PTP information if interface is available
-                    ptp_info = None
-                    if interface:
-                        ptp_info = get_ptp_info(interface)
-                    
+                    ptp_info = get_ptp_info(interface) if interface else None
+
                     if phc_timestamp_str == 'EPERM':
-                        output_lines.append(f"  Time: Permission denied (run as root or add user to 'ptp' group)")
+                        time_col = 'permission denied'
+                        offset_col = '-'
                     elif phc_timestamp_str:
-                        human_time = timestamp_to_human(phc_timestamp_str)
+                        time_col = timestamp_to_human(phc_timestamp_str)
                         offset_ms = calculate_offset_ms(phc_timestamp_str, system_ts_str)
-
-                        output_lines.append(f"  Time: {human_time} | Raw: {phc_timestamp_str}")
-
-                        if offset_ms is not None:
-                            output_lines.append(f"  Offset from system clock: {offset_ms:+.3f} ms")
+                        offset_col = f"{offset_ms:+.3f} ms" if offset_ms is not None else '-'
                     else:
-                        output_lines.append(f"  Time: unavailable")
-                    
-                    # Display PTP information if interface is available
-                    if interface and ptp_info:
+                        time_col = 'unavailable'
+                        offset_col = '-'
+
+                    output_lines.append(f"  {phc_name:<{w_dev}} {(interface or 'N/A'):<{w_iface}} {time_col:<{w_time}} {offset_col:<{w_offset}}")
+
+                    # PTP daemon details (only when data is available)
+                    if ptp_info:
                         if ptp_info['port_state'] != 'N/A':
-                            output_lines.append(f"  Protocol: {ptp_info['protocol']:<25} Port State: {ptp_info['port_state']:<15} Delay Mech: {ptp_info['delay_mechanism']}")
-                        if ptp_info['timescale'] not in ('N/A', 'Unknown') or ptp_info['time_source'] != 'N/A':
-                            output_lines.append(f"  Timescale: {ptp_info['timescale']:<25} Time Source: {ptp_info['time_source']}")
+                            output_lines.append(f"    Protocol: {ptp_info['protocol']}  Port State: {ptp_info['port_state']}  Delay: {ptp_info['delay_mechanism']}")
                         if ptp_info['offset_from_master'] != 'N/A' or ptp_info['mean_path_delay'] != 'N/A':
-                            offset_str = format_ns_to_readable(ptp_info['offset_from_master'])
-                            delay_str = format_ns_to_readable(ptp_info['mean_path_delay'])
-                            output_lines.append(f"  Offset from Master: {offset_str:<25} Mean Path Delay: {delay_str}")
-                        if ptp_info['steps_removed'] != 'N/A' or ptp_info['gm_identity'] != 'N/A':
-                            output_lines.append(f"  Steps Removed: {ptp_info['steps_removed']:<25} GM Identity: {ptp_info['gm_identity']}")
-                
-                # Now show interfaces without hardware timestamping support if requested
+                            output_lines.append(f"    Master offset: {format_ns_to_readable(ptp_info['offset_from_master'])}  Path delay: {format_ns_to_readable(ptp_info['mean_path_delay'])}")
+                        if ptp_info['gm_identity'] != 'N/A':
+                            output_lines.append(f"    GM: {ptp_info['gm_identity']}  Steps: {ptp_info['steps_removed']}  Timescale: {ptp_info['timescale']}  Source: {ptp_info['time_source']}")
+
                 if show_all_interfaces:
-                    non_hw_interfaces = [iface for iface in all_interfaces if iface not in shown_interfaces]
-                    
-                    if non_hw_interfaces:
-                        output_lines.append(f"\n{'═' * 140}")
-                        output_lines.append(f"INTERFACES WITHOUT HARDWARE TIMESTAMPING SUPPORT")
-                        output_lines.append(f"{'═' * 140}")
-                        
-                        for interface in non_hw_interfaces:
-                            output_lines.append(f"\n{'─' * 140}")
-                            output_lines.append(f"{'INTERFACE':<20} {interface:<15} PHC: None")
-                            output_lines.append(f"  Hardware Timestamping: NOT SUPPORTED")
-                            output_lines.append(f"  Uses system clock for timestamping (software timestamps only)")
-                            
-                            # Still try to get PTP info in case it's running with software timestamps
-                            ptp_info = get_ptp_info(interface)
-                            if ptp_info and ptp_info['port_state'] != 'N/A':
-                                output_lines.append(f"  Protocol: {ptp_info['protocol']:<25} Port State: {ptp_info['port_state']:<15} Delay Mech: {ptp_info['delay_mechanism']}")
-                                output_lines.append(f"  Note: Running PTP with software timestamps (reduced accuracy)")
-            
-            output_lines.append(f"\n{'=' * 140}")
-            output_lines.append(f"Update interval: {interval}s | Press Ctrl+C to exit | Updates: {iteration + 1}")
-            if show_all_interfaces:
-                output_lines.append(f"Showing all interfaces (use without -a to show only HW timestamping interfaces)")
-            
-            # Clear from cursor to end of screen, then print all lines
+                    non_hw = [i for i in all_interfaces if i not in shown_interfaces]
+                    if non_hw:
+                        output_lines.append('─' * cols)
+                        output_lines.append(f"  {'(no PHC)':<{w_dev}} {'INTERFACE':<{w_iface}} software timestamps only")
+                        for iface in non_hw:
+                            ptp_info = get_ptp_info(iface)
+                            state = ptp_info['port_state'] if ptp_info and ptp_info['port_state'] != 'N/A' else '-'
+                            output_lines.append(f"  {'-':<{w_dev}} {iface:<{w_iface}} {'-':<{w_time}} port state: {state}")
+
+            output_lines.append('─' * cols)
+            output_lines.append(f"  interval: {interval}s | Ctrl+C to exit")
+
             sys.stdout.write('\033[J')
             for line in output_lines:
                 print(line)
-            
             sys.stdout.flush()
-            
+
             iteration += 1
             time.sleep(interval)
-            
+
     except KeyboardInterrupt:
-        print("\n\nExiting...")
+        print()
         sys.exit(0)
 
 
