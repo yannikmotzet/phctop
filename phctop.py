@@ -339,9 +339,9 @@ def display_times(interval=1, show_all_interfaces=False):
             output_lines.append('─' * cols)
 
             # Column widths
-            w_dev, w_iface, w_time, w_offset = 10, 12, 26, 16
+            w_dev, w_iface, w_time, w_raw, w_offset = 10, 12, 26, 22, 16
 
-            header = f"  {'DEVICE':<{w_dev}} {'INTERFACE':<{w_iface}} {'TIME':<{w_time}} {'SYS OFFSET':<{w_offset}}"
+            header = f"  {'DEVICE':<{w_dev}} {'INTERFACE':<{w_iface}} {'TIME':<{w_time}} {'RAW':<{w_raw}} {'SYS OFFSET':<{w_offset}}"
             output_lines.append(header)
             output_lines.append('─' * cols)
 
@@ -349,7 +349,7 @@ def display_times(interval=1, show_all_interfaces=False):
             system_dt, system_ts_raw = get_system_time()
             system_ts_str = f"{system_ts_raw:.9f}"
             system_human = system_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            output_lines.append(f"  {'system':<{w_dev}} {'-':<{w_iface}} {system_human:<{w_time}} {'reference':<{w_offset}}")
+            output_lines.append(f"  {'system':<{w_dev}} {'-':<{w_iface}} {system_human:<{w_time}} {system_ts_str:<{w_raw}} {'reference':<{w_offset}}")
 
             # Find all PHCs
             phc_devices = find_all_phcs()
@@ -371,17 +371,16 @@ def display_times(interval=1, show_all_interfaces=False):
                     ptp_info = get_ptp_info(interface) if interface else None
 
                     if phc_timestamp_str == 'EPERM':
-                        time_col = 'permission denied'
-                        offset_col = '-'
+                        time_col, raw_col, offset_col = 'permission denied', '-', '-'
                     elif phc_timestamp_str:
                         time_col = timestamp_to_human(phc_timestamp_str)
+                        raw_col = phc_timestamp_str
                         offset_ms = calculate_offset_ms(phc_timestamp_str, system_ts_str)
                         offset_col = f"{offset_ms:+.3f} ms" if offset_ms is not None else '-'
                     else:
-                        time_col = 'unavailable'
-                        offset_col = '-'
+                        time_col, raw_col, offset_col = 'unavailable', '-', '-'
 
-                    output_lines.append(f"  {phc_name:<{w_dev}} {(interface or 'N/A'):<{w_iface}} {time_col:<{w_time}} {offset_col:<{w_offset}}")
+                    output_lines.append(f"  {phc_name:<{w_dev}} {(interface or 'N/A'):<{w_iface}} {time_col:<{w_time}} {raw_col:<{w_raw}} {offset_col:<{w_offset}}")
 
                     # PTP daemon details (only when data is available)
                     if ptp_info:
