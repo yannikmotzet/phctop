@@ -403,16 +403,16 @@ def display_times(interval=1, show_all_interfaces=False):
                     
                     # Display PTP information if interface is available
                     if interface and ptp_info:
-                        output_lines.append(f"  Protocol: {ptp_info['protocol']:<25} Port State: {ptp_info['port_state']:<15} Delay Mech: {ptp_info['delay_mechanism']}")
-                        output_lines.append(f"  Timescale: {ptp_info['timescale']:<25} Time Source: {ptp_info['time_source']}")
-                        
-                        offset_str = format_ns_to_readable(ptp_info['offset_from_master'])
-                        delay_str = format_ns_to_readable(ptp_info['mean_path_delay'])
-                        
-                        output_lines.append(f"  Offset from Master: {offset_str:<25} Mean Path Delay: {delay_str}")
-                        output_lines.append(f"  Steps Removed: {ptp_info['steps_removed']:<25} GM Identity: {ptp_info['gm_identity']}")
-                    elif not interface:
-                        output_lines.append(f"  PTP Info: Not available (no interface mapping)")
+                        if ptp_info['port_state'] != 'N/A':
+                            output_lines.append(f"  Protocol: {ptp_info['protocol']:<25} Port State: {ptp_info['port_state']:<15} Delay Mech: {ptp_info['delay_mechanism']}")
+                        if ptp_info['timescale'] not in ('N/A', 'Unknown') or ptp_info['time_source'] != 'N/A':
+                            output_lines.append(f"  Timescale: {ptp_info['timescale']:<25} Time Source: {ptp_info['time_source']}")
+                        if ptp_info['offset_from_master'] != 'N/A' or ptp_info['mean_path_delay'] != 'N/A':
+                            offset_str = format_ns_to_readable(ptp_info['offset_from_master'])
+                            delay_str = format_ns_to_readable(ptp_info['mean_path_delay'])
+                            output_lines.append(f"  Offset from Master: {offset_str:<25} Mean Path Delay: {delay_str}")
+                        if ptp_info['steps_removed'] != 'N/A' or ptp_info['gm_identity'] != 'N/A':
+                            output_lines.append(f"  Steps Removed: {ptp_info['steps_removed']:<25} GM Identity: {ptp_info['gm_identity']}")
                 
                 # Now show interfaces without hardware timestamping support if requested
                 if show_all_interfaces:
