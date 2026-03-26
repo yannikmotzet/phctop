@@ -43,15 +43,11 @@ def get_phc_time_raw(phc_device):
 def get_phc_for_interface(interface):
     """Find which PHC device corresponds to a network interface"""
     try:
-        net_path = Path(f'/sys/class/net/{interface}')
-        if not net_path.exists():
-            return None
-
-        ptp_path = net_path / 'device' / 'ptp'
+        ptp_path = Path(f'/sys/class/net/{interface}/device/ptp')
         if ptp_path.exists():
-            for ptp_dir in ptp_path.iterdir():
-                if ptp_dir.name.startswith('ptp'):
-                    return f"/dev/{ptp_dir.name}"
+            entries = [e for e in ptp_path.iterdir() if e.name.startswith('ptp')]
+            if entries:
+                return f"/dev/{entries[0].name}"
         return None
     except:
         return None
@@ -60,19 +56,11 @@ def get_phc_for_interface(interface):
 def get_interface_for_phc(phc_num):
     """Find which network interface corresponds to a PHC"""
     try:
-        net_path = Path('/sys/class/net')
-        if not net_path.exists():
-            return None
-
-        for iface in net_path.iterdir():
-            if not iface.is_dir():
-                continue
-
-            ptp_path = iface / 'device' / 'ptp'
-            if ptp_path.exists():
-                for ptp_dir in ptp_path.iterdir():
-                    if ptp_dir.name == f'ptp{phc_num}':
-                        return iface.name
+        net_path = Path(f'/sys/class/ptp/ptp{phc_num}/device/net')
+        if net_path.exists():
+            entries = list(net_path.iterdir())
+            if entries:
+                return entries[0].name
         return None
     except:
         return None
