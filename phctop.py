@@ -3,6 +3,7 @@
 phctop - Monitor PTP Hardware Clock times with detailed PTP information
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -26,12 +27,14 @@ def get_phc_time_raw(phc_device):
             text=True,
             timeout=2
         )
-        
+
         if result.returncode == 0:
             output = result.stdout.strip()
-            if ':' in output:
-                timestamp_str = output.split(':')[-1].strip()
-                return timestamp_str  # Return as string to preserve precision
+            match = re.search(r'clock time is (\d+\.\d+)', output)
+            if match:
+                return match.group(1)  # Return as string to preserve precision
+        elif 'Permission denied' in result.stderr or 'Operation not permitted' in result.stderr:
+            return 'EPERM'
         return None
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError, FileNotFoundError):
         return None
@@ -43,8 +46,8 @@ def get_phc_for_interface(interface):
         net_path = Path(f'/sys/class/net/{interface}')
         if not net_path.exists():
             return None
-        
-        ptp_path = net_path / 'ptp'
+
+        ptp_path = net_path / 'device' / 'ptp'
         if ptp_path.exists():
             for ptp_dir in ptp_path.iterdir():
                 if ptp_dir.name.startswith('ptp'):
@@ -60,12 +63,12 @@ def get_interface_for_phc(phc_num):
         net_path = Path('/sys/class/net')
         if not net_path.exists():
             return None
-        
+
         for iface in net_path.iterdir():
             if not iface.is_dir():
                 continue
-            
-            ptp_path = iface / 'ptp'
+
+            ptp_path = iface / 'device' / 'ptp'
             if ptp_path.exists():
                 for ptp_dir in ptp_path.iterdir():
                     if ptp_dir.name == f'ptp{phc_num}':
@@ -385,12 +388,14 @@ def display_times(interval=1, show_all_interfaces=False):
                     if interface:
                         ptp_info = get_ptp_info(interface)
                     
-                    if phc_timestamp_str:
+                    if phc_timestamp_str == 'EPERM':
+                        output_lines.append(f"  Time: Permission denied (run as root or add user to 'ptp' group)")
+                    elif phc_timestamp_str:
                         human_time = timestamp_to_human(phc_timestamp_str)
                         offset_ms = calculate_offset_ms(phc_timestamp_str, system_ts_str)
-                        
+
                         output_lines.append(f"  Time: {human_time} | Raw: {phc_timestamp_str}")
-                        
+
                         if offset_ms is not None:
                             output_lines.append(f"  Offset from system clock: {offset_ms:+.3f} ms")
                     else:
@@ -450,6 +455,14 @@ def display_times(interval=1, show_all_interfaces=False):
         sys.exit(0)
 
 
+def check_phc_permissions():
+    """Return True if we can read PHC devices, False if permission denied"""
+    devices = sorted(Path('/dev').glob('ptp*'))
+    if not devices:
+        return True  # No devices — not a permissions issue
+    return os.access(str(devices[0]), os.R_OK | os.W_OK)
+
+
 def main():
     import argparse
     
@@ -504,11 +517,17 @@ Requirements:
     )
     
     args = parser.parse_args()
-    
+
     if args.interval <= 0:
         print("Error: Interval must be greater than 0", file=sys.stderr)
         sys.exit(1)
-    
+
+    # Re-exec with sudo if PHC devices exist but aren't readable
+    if os.geteuid() != 0 and not check_phc_permissions():
+        print("Insufficient permissions to read PHC devices. Re-running with sudo...")
+        script = os.path.abspath(sys.argv[0])
+        os.execvp('sudo', ['sudo', sys.executable, script] + sys.argv[1:])
+
     display_times(interval=args.interval, show_all_interfaces=args.all_interfaces)
 
 
